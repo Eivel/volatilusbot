@@ -24,9 +24,10 @@ func main() {
 	}
 
 	url := fmt.Sprintf(
-		"mongodb://%s:%s.mlab.com:47504/%s",
+		"mongodb://%s:%s@%s/%s",
 		os.Getenv("DB_USERNAME"),
 		os.Getenv("DB_USERPASS"),
+		os.Getenv("DB_URL"),
 		os.Getenv("DB_NAME"))
 	session, err := mgo.Dial(url)
 	if err != nil {
