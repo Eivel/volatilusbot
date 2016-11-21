@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -83,30 +82,20 @@ func queries(coll *mgo.Collection) {
 		images := []telebot.InlineQueryResult{}
 		for _, result := range results {
 			splitted := strings.Split(strings.Split(strings.Split(result.Filename, "_")[1], ".")[0], "x")
-			width, err := strconv.Atoi(splitted[0])
-			height, err := strconv.Atoi(splitted[1])
-			if err != nil {
-				log.Fatalln(err)
-				return
-			}
 			splitted = strings.Split(result.Filename, ".")
 			extension := splitted[len(splitted)-1]
 			if extension == "mp4" {
 				gif := &telebot.InlineQueryResultMpeg4Gif{
 					Title:    result.Filename,
 					URL:      result.Link,
-					Width:    width,
-					Height:   height,
 					ThumbURL: result.Link,
 				}
 				images = append(images, gif)
 			} else {
 				photo := &telebot.InlineQueryResultPhoto{
-					Title:       result.Filename,
-					PhotoURL:    result.Link,
-					PhotoWidth:  width,
-					PhotoHeight: height,
-					ThumbURL:    result.Link,
+					Title:    result.Filename,
+					PhotoURL: result.Link,
+					ThumbURL: result.Link,
 					InputMessageContent: &telebot.InputTextMessageContent{
 						Text:           result.Link,
 						DisablePreview: false,
