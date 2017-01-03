@@ -63,7 +63,7 @@ func queries(coll *mgo.Collection) {
 		log.Println("text:", query.Text)
 
 		if !hasPermissions(query.From.Username) {
-			break
+			continue
 		}
 
 		var results []struct {
