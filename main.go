@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"strings"
@@ -15,6 +17,10 @@ import (
 )
 
 var bot *telebot.Bot
+
+type permissions struct {
+	Nicknames []string
+}
 
 func main() {
 	err := godotenv.Load()
@@ -55,6 +61,10 @@ func queries(coll *mgo.Collection) {
 		log.Println("--- new query ---")
 		log.Println("from:", query.From.Username)
 		log.Println("text:", query.Text)
+
+		if !hasPermissions(query.From.Username) {
+			return
+		}
 
 		var results []struct {
 			Filename string   `bson:"filename"`
@@ -114,4 +124,21 @@ func queries(coll *mgo.Collection) {
 			log.Println("Failed to respond to query:", err)
 		}
 	}
+}
+
+func hasPermissions(username string) bool {
+	file, e := ioutil.ReadFile("./.permissions.json")
+	if e != nil {
+		log.Printf("File error: %v\n", e)
+		return false
+	}
+
+	var permissions permissions
+	json.Unmarshal(file, &permissions)
+	for _, el := range permissions.Nicknames {
+		if el == username {
+			return true
+		}
+	}
+	return false
 }
