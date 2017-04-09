@@ -35,8 +35,8 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 
-	dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable",
-		os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"))
+	dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable host=%s port=%s",
+		os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_HOST"), os.Getenv("DB_PORT"))
 	db, _ := sql.Open("postgres", dbinfo)
 	defer db.Close()
 
