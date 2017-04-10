@@ -71,7 +71,7 @@ func queries(db *sql.DB) {
 
 		var results []result
 
-		queryArgs := strings.Split(query.Text, " ")
+		queryArgs := convertToLowerCase(strings.Split(query.Text, " "))
 		fmt.Println("# Querying")
 		rows, err := db.Query("SELECT filename, url FROM volly_assets WHERE tags @> '{" + strings.Join(queryArgs, ", ") + "}'")
 		if err != nil {
@@ -157,12 +157,20 @@ func calculateLimits(perPage int, offset string, length int) (int, int, string) 
 		convertedOffset = 0
 	}
 	lower := convertedOffset * perPage
-	upper := convertedOffset*perPage + perPage - 1
+	upper := convertedOffset*perPage + perPage
 	if upper >= length {
-		return lower, length - 1, ""
+		return lower, length, ""
 	} else if upper == (length - 1) {
 		return lower, upper, ""
 	} else {
 		return lower, upper, strconv.Itoa(convertedOffset + 1)
 	}
+}
+
+func convertToLowerCase(args []string) []string {
+	out := make([]string, len(args))
+	for i, el := range args {
+		out[i] = strings.ToLower(el)
+	}
+	return out
 }
