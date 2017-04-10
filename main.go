@@ -100,9 +100,10 @@ func queries(db *sql.DB) {
 				extension := splitted[len(splitted)-1]
 				if extension == "mp4" {
 					gif := &telebot.InlineQueryResultMpeg4Gif{
-						Title:    result.Filename,
-						URL:      result.Url,
-						ThumbURL: result.Url,
+						Title:               result.Filename,
+						URL:                 result.Url,
+						ThumbURL:            result.Url,
+						InputMessageContent: &telebot.InputTextMessageContent{Text: result.Url},
 					}
 					images = append(images, gif)
 				} else {
