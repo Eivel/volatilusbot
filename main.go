@@ -9,16 +9,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/tucnak/telebot"
+	"gopkg.in/telegram-bot-api.v4"
 
 	_ "github.com/lib/pq"
 
 	"github.com/joho/godotenv"
 )
-
-var bot *telebot.Bot
 
 type permissions struct {
 	Nicknames []string
@@ -26,7 +23,7 @@ type permissions struct {
 
 type result struct {
 	Filename string
-	Url      string
+	URL      string
 }
 
 func main() {
@@ -40,97 +37,115 @@ func main() {
 	db, _ := sql.Open("postgres", dbinfo)
 	defer db.Close()
 
-	bot, err = telebot.NewBot(os.Getenv("BOT_TOKEN"))
+	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	bot.Queries = make(chan telebot.Query, 1000)
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
 
-	go queries(db)
+	updates, err := bot.GetUpdatesChan(u)
+	if err != nil {
+		log.Println(err)
+	}
+
 	log.Println("Masz krowę?")
 
-	bot.Start(1 * time.Second)
+	for update := range updates {
+		go processUpdate(bot, db, update)
+	}
 }
 
-func queries(db *sql.DB) {
-	for query := range bot.Queries {
-		log.Println("--- new query ---")
-		log.Println("from:", query.From.Username)
-		log.Println("text:", query.Text)
-		log.Printf("%+v", query)
-		offset := query.Offset
-		if offset == "" {
-			offset = "0"
-		}
-		perPage := 50
+func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
+	if update.InlineQuery == nil {
+		return
+	}
+	query := update.InlineQuery
+	log.Println("--- new query ---")
+	log.Println("from:", query.From.UserName)
+	log.Println("text:", query.Query)
 
-		if !hasPermissions(query.From.Username) {
-			continue
-		}
+	offset := query.Offset
+	if offset == "" {
+		offset = "0"
+	}
+	perPage := 50
 
-		var results []result
+	if !hasPermissions(query.From.UserName) {
+		return
+	}
 
-		queryArgs := convertToLowerCase(strings.Split(query.Text, " "))
-		fmt.Println("# Querying")
-		rows, err := db.Query("SELECT filename, url FROM volly_assets WHERE tags @> '{" + strings.Join(queryArgs, ", ") + "}'")
+	var results []result
+
+	queryArgs := convertToLowerCase(strings.Split(query.Query, " "))
+	rows, err := db.Query("SELECT filename, url FROM volly_assets WHERE tags @> '{" + strings.Join(queryArgs, ", ") + "}'")
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	for rows.Next() {
+		var filename string
+		var url string
+		err = rows.Scan(&filename, &url)
 		if err != nil {
 			log.Println(err)
 			continue
 		}
-		for rows.Next() {
-			var filename string
-			var url string
-			err = rows.Scan(&filename, &url)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			results = append(results, result{Filename: filename, Url: url})
-		}
+		results = append(results, result{Filename: filename, URL: url})
+	}
 
-		lowerLimit, upperLimit, offset := calculateLimits(perPage, offset, len(results))
+	lowerLimit, upperLimit, offset := calculateLimits(perPage, offset, len(results))
 
-		images := []telebot.InlineQueryResult{}
-		if len(results) > 0 {
-			log.Printf("lower: %v, upper: %v, length: %v", lowerLimit, upperLimit, len(results))
-			for _, result := range results[lowerLimit:upperLimit] {
-				splitted := strings.Split(strings.Split(strings.Split(result.Filename, "_")[1], ".")[0], "x")
-				splitted = strings.Split(result.Filename, ".")
-				extension := splitted[len(splitted)-1]
-				if extension == "mp4" {
-					gif := &telebot.InlineQueryResultMpeg4Gif{
-						Title:               result.Filename,
-						URL:                 result.Url,
-						ThumbURL:            result.Url,
-						InputMessageContent: &telebot.InputTextMessageContent{Text: result.Url},
-					}
-					images = append(images, gif)
-				} else {
-					photo := &telebot.InlineQueryResultPhoto{
-						Title:    result.Filename,
-						PhotoURL: result.Url,
-						ThumbURL: result.Url,
-						InputMessageContent: &telebot.InputTextMessageContent{
-							Text:           result.Url,
-							DisablePreview: false,
-						},
-					}
-					images = append(images, photo)
+	images := make([]interface{}, 0)
+
+	if len(results) > 0 {
+		log.Printf("lower: %v, upper: %v, length: %v", lowerLimit, upperLimit, len(results))
+		for iter, result := range results[lowerLimit:upperLimit] {
+			splitted := strings.Split(strings.Split(strings.Split(result.Filename, "_")[1], ".")[0], "x")
+			splitted = strings.Split(result.Filename, ".")
+			extension := splitted[len(splitted)-1]
+			if extension == "mp4" {
+				gif := tgbotapi.InlineQueryResultMPEG4GIF{
+					Type:                "mpeg4_gif",
+					ID:                  strconv.Itoa(iter),
+					Title:               result.Filename,
+					URL:                 result.URL,
+					ThumbURL:            result.URL,
+					InputMessageContent: tgbotapi.InputTextMessageContent{Text: result.URL},
 				}
+				images = append(images, gif)
+			} else {
+				photo := tgbotapi.InlineQueryResultPhoto{
+					Type:     "photo",
+					ID:       strconv.Itoa(iter),
+					Title:    result.Filename,
+					URL:      result.URL,
+					ThumbURL: result.URL,
+					InputMessageContent: tgbotapi.InputTextMessageContent{
+						Text: result.URL,
+						DisableWebPagePreview: false,
+					},
+				}
+				images = append(images, photo)
 			}
 		}
+	}
 
-		response := telebot.QueryResponse{
-			Results:    images,
-			IsPersonal: true,
-			NextOffset: offset,
-			CacheTime:  1,
-		}
+	response := tgbotapi.InlineConfig{
+		InlineQueryID: query.ID,
+		Results:       images,
+		IsPersonal:    true,
+		NextOffset:    offset,
+		CacheTime:     1,
+	}
 
-		if err := bot.AnswerInlineQuery(&query, &response); err != nil {
-			log.Println("Failed to respond to query:", err)
-		}
+	apiResponse, err := bot.AnswerInlineQuery(response)
+	if err != nil {
+		log.Println("Failed to respond to query:", err)
+	}
+	if !apiResponse.Ok {
+		log.Println("API error:", err)
 	}
 }
 
