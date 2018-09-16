@@ -1,2 +1,4 @@
 .env
 .permissions.json
+.serverless
+bin

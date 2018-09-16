@@ -1,0 +1,34 @@
+service: volatilusbot-sls
+
+frameworkVersion: ">=1.28.0 <2.0.0"
+
+provider:
+  name: aws
+  runtime: go1.x
+  memorySize: 128
+  timeout: 3
+  stage: ${opt:stage, 'development'}
+  region: eu-west-1
+
+  environment:
+    DB_NAME: ${ssm:/telegram/rds/db_name~true}
+    DB_HOST: ${ssm:/telegram/rds/host~true}
+    DB_USERNAME: ${ssm:/telegram/rds/username~true}
+    DB_PASSWORD: ${ssm:/telegram/rds/password~true}
+    DB_PORT: ${ssm:/telegram/rds/db_port~true}
+    BOT_TOKEN: ${ssm:/telegram/volatilusbot/bot_token~true}
+    DRACONIS_ID: ${ssm:/telegram/shared/draconis_id~true}
+
+package:
+ exclude:
+   - ./**
+ include:
+   - ./bin/**
+
+functions:
+  bot:
+    handler: bin/bot
+    events:
+      - http:
+          path: bot/token
+          method: post

@@ -4,56 +4,64 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 
-	"gopkg.in/telegram-bot-api.v4"
-
 	_ "github.com/lib/pq"
+	"github.com/pkg/errors"
 
-	"github.com/joho/godotenv"
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+	"gopkg.in/telegram-bot-api.v4"
 )
-
-type permissions struct {
-	Nicknames []string
-}
 
 type result struct {
 	Filename string
 	URL      string
 }
 
+func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	update := &tgbotapi.Update{}
+	err := json.Unmarshal([]byte(request.Body), update)
+	if err != nil {
+		log.Println(errors.Wrap(err, "could not unmarshall update"))
+		return finishLambda(), nil
+	}
+	if update.InlineQuery != nil {
+		dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable host=%s port=%s",
+			os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_HOST"), os.Getenv("DB_PORT"))
+		db, err := sql.Open("postgres", dbinfo)
+		if err != nil {
+			log.Println(errors.Wrap(err, "could not connect to the RDS"))
+			return finishLambda(), nil
+		}
+		defer db.Close()
+
+		bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
+		if err != nil {
+			log.Println(errors.Wrap(err, "could not initialize bot instance"))
+			return finishLambda(), nil
+		}
+
+		processUpdate(bot, db, *update)
+	}
+
+	return finishLambda(), nil
+}
+
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	lambda.Start(Handler)
+}
 
-	dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable host=%s port=%s",
-		os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_HOST"), os.Getenv("DB_PORT"))
-	db, _ := sql.Open("postgres", dbinfo)
-	defer db.Close()
-
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	updates, err := bot.GetUpdatesChan(u)
-	if err != nil {
-		log.Println(err)
-	}
-
-	log.Println("Masz krowę?")
-
-	for update := range updates {
-		go processUpdate(bot, db, update)
+func finishLambda() events.APIGatewayProxyResponse {
+	return events.APIGatewayProxyResponse{
+		StatusCode:      200,
+		IsBase64Encoded: false,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
 	}
 }
 
@@ -72,24 +80,26 @@ func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
 	}
 	perPage := 50
 
-	if !hasPermissions(query.From.UserName) {
+	if !hasPermissions(db, query.From.ID) {
 		return
 	}
 
 	var results []result
 
 	queryArgs := convertToLowerCase(strings.Split(query.Query, " "))
+
 	rows, err := db.Query("SELECT filename, url FROM volly_assets WHERE tags @> '{" + strings.Join(queryArgs, ", ") + "}'")
 	if err != nil {
-		log.Println(err)
+		log.Println(errors.Wrap(err, "could not complete the query for links"))
 		return
 	}
+
 	for rows.Next() {
 		var filename string
 		var url string
 		err = rows.Scan(&filename, &url)
 		if err != nil {
-			log.Println(err)
+			log.Println(errors.Wrap(err, "could not read one or more link rows"))
 			continue
 		}
 		results = append(results, result{Filename: filename, URL: url})
@@ -149,20 +159,26 @@ func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
 	}
 }
 
-func hasPermissions(username string) bool {
-	file, e := ioutil.ReadFile("./.permissions.json")
-	if e != nil {
-		log.Printf("File error: %v\n", e)
+func hasPermissions(db *sql.DB, userID int) bool {
+	stringifiedID := strconv.Itoa(userID)
+	rows, err := db.Query(fmt.Sprintf("SELECT DISTINCT users.telegram_id FROM users JOIN messages ON messages.sender_id = users.id JOIN chats ON chats.id = messages.chat_id WHERE chats.telegram_id = %s;", os.Getenv("DRACONIS_ID")))
+	if err != nil {
+		log.Println(errors.Wrap(err, "could not complete the query for permissions"))
 		return false
 	}
 
-	var permissions permissions
-	json.Unmarshal(file, &permissions)
-	for _, el := range permissions.Nicknames {
-		if el == username {
+	for rows.Next() {
+		var telegramID string
+		err = rows.Scan(&telegramID)
+		if err != nil {
+			log.Println(errors.Wrap(err, "could not read one or more telegram ids"))
+			continue
+		}
+		if stringifiedID == telegramID {
 			return true
 		}
 	}
+	log.Println("Permissions not found for userID: ", stringifiedID)
 	return false
 }
 
