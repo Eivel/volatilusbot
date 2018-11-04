@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,8 +11,6 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pkg/errors"
 
-	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
 	"gopkg.in/telegram-bot-api.v4"
 )
 
@@ -22,46 +19,32 @@ type result struct {
 	URL      string
 }
 
-func Handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	update := &tgbotapi.Update{}
-	err := json.Unmarshal([]byte(request.Body), update)
-	if err != nil {
-		log.Println(errors.Wrap(err, "could not unmarshall update"))
-		return finishLambda(), nil
-	}
-	if update.InlineQuery != nil {
-		dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable host=%s port=%s",
-			os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_HOST"), os.Getenv("DB_PORT"))
-		db, err := sql.Open("postgres", dbinfo)
-		if err != nil {
-			log.Println(errors.Wrap(err, "could not connect to the RDS"))
-			return finishLambda(), nil
-		}
-		defer db.Close()
-
-		bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
-		if err != nil {
-			log.Println(errors.Wrap(err, "could not initialize bot instance"))
-			return finishLambda(), nil
-		}
-
-		processUpdate(bot, db, *update)
-	}
-
-	return finishLambda(), nil
-}
-
 func main() {
-	lambda.Start(Handler)
-}
+	dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable host=%s port=%s",
+		os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_HOST"), os.Getenv("DB_PORT"))
+	db, err := sql.Open("postgres", dbinfo)
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "could not connect to the RDS"))
+	}
+	defer db.Close()
 
-func finishLambda() events.APIGatewayProxyResponse {
-	return events.APIGatewayProxyResponse{
-		StatusCode:      200,
-		IsBase64Encoded: false,
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
+	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "could not initialize bot instance"))
+	}
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+
+	updates, err := bot.GetUpdatesChan(u)
+	if err != nil {
+		log.Fatalln(errors.Wrap(err, "could not initialize the update channel"))
+	}
+
+	log.Println("Masz krowę?")
+
+	for update := range updates {
+		go processUpdate(bot, db, update)
 	}
 }
 
