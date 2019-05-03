@@ -1,8 +1,9 @@
 package main
 
 import (
-	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
@@ -11,7 +12,8 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pkg/errors"
 
-	"gopkg.in/telegram-bot-api.v4"
+	"gopkg.in/rethinkdb/rethinkdb-go.v5"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 type result struct {
@@ -19,14 +21,26 @@ type result struct {
 	URL      string
 }
 
+type permissions struct {
+	Nicknames []string
+}
+
+type vollyAsset struct {
+	URL      string   `json:"url"`
+	Filename string   `json:"filename"`
+	Tags     []string `json:"tags"`
+}
+
 func main() {
-	dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable host=%s port=%s",
-		os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_HOST"), os.Getenv("DB_PORT"))
-	db, err := sql.Open("postgres", dbinfo)
+	dbSession, err := rethinkdb.Connect(rethinkdb.ConnectOpts{
+		Address:    "localhost:28015",
+		Database:   "temerairebot",
+		InitialCap: 10,
+		MaxOpen:    10,
+	})
 	if err != nil {
-		log.Fatalln(errors.Wrap(err, "could not connect to the RDS"))
+		log.Fatal(errors.Wrap(err, "error initializing db session"))
 	}
-	defer db.Close()
 
 	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
 	if err != nil {
@@ -44,11 +58,11 @@ func main() {
 	log.Println("Masz krowę?")
 
 	for update := range updates {
-		go processUpdate(bot, db, update)
+		go processUpdate(bot, dbSession, update)
 	}
 }
 
-func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
+func processUpdate(bot *tgbotapi.BotAPI, dbSession *rethinkdb.Session, update tgbotapi.Update) {
 	if update.InlineQuery == nil {
 		return
 	}
@@ -63,29 +77,33 @@ func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
 	}
 	perPage := 50
 
-	if !hasPermissions(db, query.From.ID) {
+	if !hasPermissions(query.From.UserName) {
 		return
 	}
-
-	var results []result
 
 	queryArgs := convertToLowerCase(strings.Split(query.Query, " "))
-
-	rows, err := db.Query("SELECT filename, url FROM volly_assets WHERE tags @> '{" + strings.Join(queryArgs, ", ") + "}'")
-	if err != nil {
-		log.Println(errors.Wrap(err, "could not complete the query for links"))
-		return
+	convertedArgs := make([]interface{}, len(queryArgs))
+	for i, v := range queryArgs {
+		convertedArgs[i] = v
 	}
 
-	for rows.Next() {
-		var filename string
-		var url string
-		err = rows.Scan(&filename, &url)
-		if err != nil {
-			log.Println(errors.Wrap(err, "could not read one or more link rows"))
-			continue
-		}
-		results = append(results, result{Filename: filename, URL: url})
+	queryString := rethinkdb.Table("volly_assets")
+	if len(query.Query) > 0 {
+		queryString = queryString.Filter(func(row rethinkdb.Term) interface{} {
+			return row.Field("tags").Contains(convertedArgs...)
+		})
+	}
+
+	rows, err := queryString.Run(dbSession)
+	if err != nil {
+		fmt.Println("could not query the assets")
+		return
+	}
+	results := []vollyAsset{}
+	err = rows.All(&results)
+	if err != nil {
+		fmt.Println("could not fetch the assets")
+		return
 	}
 
 	lowerLimit, upperLimit, offset := calculateLimits(perPage, offset, len(results))
@@ -116,7 +134,7 @@ func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
 					URL:      result.URL,
 					ThumbURL: result.URL,
 					InputMessageContent: tgbotapi.InputTextMessageContent{
-						Text: result.URL,
+						Text:                  result.URL,
 						DisableWebPagePreview: false,
 					},
 				}
@@ -142,26 +160,20 @@ func processUpdate(bot *tgbotapi.BotAPI, db *sql.DB, update tgbotapi.Update) {
 	}
 }
 
-func hasPermissions(db *sql.DB, userID int) bool {
-	stringifiedID := strconv.Itoa(userID)
-	rows, err := db.Query(fmt.Sprintf("SELECT DISTINCT users.telegram_id FROM users JOIN messages ON messages.sender_id = users.id JOIN chats ON chats.id = messages.chat_id WHERE chats.telegram_id = %s;", os.Getenv("DRACONIS_ID")))
-	if err != nil {
-		log.Println(errors.Wrap(err, "could not complete the query for permissions"))
+func hasPermissions(username string) bool {
+	file, e := ioutil.ReadFile("./.permissions.json")
+	if e != nil {
+		log.Printf("File error: %v\n", e)
 		return false
 	}
 
-	for rows.Next() {
-		var telegramID string
-		err = rows.Scan(&telegramID)
-		if err != nil {
-			log.Println(errors.Wrap(err, "could not read one or more telegram ids"))
-			continue
-		}
-		if stringifiedID == telegramID {
+	var permissions permissions
+	json.Unmarshal(file, &permissions)
+	for _, el := range permissions.Nicknames {
+		if el == username {
 			return true
 		}
 	}
-	log.Println("Permissions not found for userID: ", stringifiedID)
 	return false
 }
 

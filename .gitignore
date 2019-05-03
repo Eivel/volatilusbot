@@ -1,2 +1,4 @@
 .env
 .serverless
+.permissions.json
+.vscode
